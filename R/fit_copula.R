@@ -444,6 +444,11 @@ convert_n <- function(sce,
   count_mat <-
       t(as.matrix(SummarizedExperiment::assay(sce, assay_use)))
   removed_cell_list <- lapply(marginal_list, function(x){x$removed_cell})
+  # get from the input
+  mean_vec_list <- lapply(marginal_list, function(x){x$mean_vec})
+  theta_vec_list <- lapply(marginal_list, function(x){x$theta_vec})
+  zero_vec_list <- lapply(marginal_list, function(x){x$zero_vec})
+
   marginal_list <- lapply(marginal_list, function(x){x$fit})
   # n cell
   ncell <- dim(count_mat)[1]
@@ -451,59 +456,79 @@ convert_n <- function(sce,
 
   mat_function <- function(x, y) {
     fit <- marginal_list[[x]]
+    mean_vec <- mean_vec_list[[x]]
+    theta_vec <- theta_vec_list[[x]]
+    zero_vec <- zero_vec_list[[x]]
+
     removed_cell <- removed_cell_list[[x]]
     if(length(removed_cell) > 0 && !any(is.na(removed_cell))){
       data<- data[-removed_cell,]
     }
-    if (methods::is(fit, "gamlss")) {
-      mean_vec <- stats::predict(fit, type = "response", what = "mu", data = data)
-      if (y == "poisson" | y == "binomial") {
-        theta_vec <- rep(NA, length(mean_vec))
-      } else if (y == "gaussian") {
-        theta_vec <-
+    #if (methods::is(fit, "gamlss")) {
+      mean_vec2 <- stats::predict(fit, type = "response", what = "mu", data = data)
+      #if (y == "poisson" | y == "binomial") {
+      #  theta_vec <- rep(NA, length(mean_vec))
+      #} else if (y == "gaussian") {
+        theta_vec2 <-
           stats::predict(fit, type = "response", what = "sigma", data = data) # called the theta_vec but actually used as sigma_vec for Gaussian
-      } else if (y == "nb") {
-        theta_vec <-
-          1 / stats::predict(fit, type = "response", what = "sigma", data = data)
-        #theta_vec[theta_vec < 1e-3] <- 1e-3
-      } else if (y == "zip") {
-        theta_vec <- rep(NA, length(mean_vec))
-        zero_vec <-
-          stats::predict(fit, type = "response", what = "sigma", data = data)
-      } else if (y == "zinb") {
-        theta_vec <- stats::predict(fit, type = "response", what = "sigma", data = data)
-        zero_vec <-
-          stats::predict(fit, type = "response", what = "nu", data = data)
-      } else {
-        stop("Distribution of gamlss must be one of gaussian, poisson, nb, zip or zinb!")
-      }
-    } else {
-      ## if input is from mgcv
-      ## Check the family (since sometimes zip and zinb may degenerate into poisson or nb)
 
-      y <- stats::family(fit)$family[1]
-      if (grepl("Negative Binomial", y)) {
-        y <- "nb"
+      #print("mean_vec ", mean_vec)
+      #print("mean_vec2 ", mean_vec2)
+      #print("theta_vec ", theta_vec)
+      #print("theta_vec2 ", theta_vec2)
+      if( sum( (mean_vec - mean_vec2)^2 ) > 1) {
+        print( x )
+        print( y )
+        print( fit )
+        print( mean_vec - mean_vec2 )
       }
-
-      mean_vec <- stats::predict(fit, type = "response")
-      if (y == "poisson" | y == "binomial") {
-        theta_vec <- rep(NA, length(mean_vec))
-      } else if (y == "gaussian") {
-        theta_vec <- rep(sqrt(fit$sig2), length(mean_vec)) # called the theta_vec but actually used as sigma_vec for Gaussian
-      } else if (y == "nb") {
-        theta <- fit$family$getTheta(TRUE)
-        theta_vec <- rep(theta, length(mean_vec))
-      } else {
-        stop("Distribution of mgcv must be one of gaussian, poisson or nb!")
-      }
-    }
+      
+      #} else if (y == "nb") {
+      #  theta_vec <-
+      #    1 / stats::predict(fit, type = "response", what = "sigma", data = data)
+      #  #theta_vec[theta_vec < 1e-3] <- 1e-3
+      #} else if (y == "zip") {
+      #  theta_vec <- rep(NA, length(mean_vec))
+      #  zero_vec <-
+      #    stats::predict(fit, type = "response", what = "sigma", data = data)
+      #} else if (y == "zinb") {
+      #  theta_vec <- stats::predict(fit, type = "response", what = "sigma", data = data)
+      #  zero_vec <-
+      #    stats::predict(fit, type = "response", what = "nu", data = data)
+      #} else {
+      #  stop("Distribution of gamlss must be one of gaussian, poisson, nb, zip or zinb!")
+      #}
+    #} else {
+    #  ## if input is from mgcv
+    #  ## Check the family (since sometimes zip and zinb may degenerate into poisson or nb)
+#
+#      y <- stats::family(fit)$family[1]
+#      if (grepl("Negative Binomial", y)) {
+#        y <- "nb"
+#      }
+#
+#      mean_vec <- stats::predict(fit, type = "response")
+#      if (y == "poisson" | y == "binomial") {
+#        theta_vec <- rep(NA, length(mean_vec))
+#      } else if (y == "gaussian") {
+#        theta_vec <- rep(sqrt(fit$sig2), length(mean_vec)) # called the theta_vec but actually used as sigma_vec for Gaussian
+#      } else if (y == "nb") {
+#        theta <- fit$family$getTheta(TRUE)
+#        theta_vec <- rep(theta, length(mean_vec))
+#      } else {
+#        stop("Distribution of mgcv must be one of gaussian, poisson or nb!")
+#      }
+#    }
 
     ## Mean for Each Cell
 
 
     Y <- count_mat[names(mean_vec), x]
 
+    if( x == 1 ) {
+      print( mean_vec[1:10] )
+      print( theta_vec[1:10] )
+    }
 
     ## Frame
     if (!exists("zero_vec")) {

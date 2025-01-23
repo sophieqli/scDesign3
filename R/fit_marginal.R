@@ -67,6 +67,7 @@ fit_marginal <- function(data,
   filtered_gene <- data$filtered_gene
   feature_names <- colnames(count_mat)
   
+
   
   # Extract K from mu formula
   matches <- regexpr("k\\s*=\\s*([0-9]+)", mu_formula, perl = TRUE)
@@ -418,6 +419,7 @@ fit_marginal <- function(data,
         })
       
       if (sigma_formula != "~1") {
+        #cat( "gamlss gene ", gene,  "fit formula ", mu_formula, " ", sigma_formula, "\n" )
         gamlss.fit <- withCallingHandlers(
           tryCatch({
             start.time = Sys.time()
@@ -534,12 +536,28 @@ fit_marginal <- function(data,
         }
       }
       
+      print("found one mgcv fit")
       fit <- mgcv.fit
     } else {
       
       mean_vec <- stats::predict(gamlss.fit, type = "response", what = "mu", data = dat_use)
       theta_vec <-
         stats::predict(gamlss.fit, type = "response", what = "sigma", data = dat_use)
+
+      if( gene == 'Pyy' ) {
+        print("mean_vec")
+        print(mean_vec[1:10])
+        print("theta_vec")
+        print(theta_vec[1:10])
+
+        library(MASS)
+        model_nb <-glm.nb(gene ~ pseudotime, data = dat_use)
+        mu = fitted( model_nb )
+        sigma = 1.0 / summary( model_nb )$theta
+        print("ready to debug")
+        print( mu[1:10])
+        print( sigma)
+      }
       
       if_infinite <- (sum(is.infinite(mean_vec + theta_vec)) > 0)
       if_overmax <- (max(mean_vec, na.rm = TRUE) > 10* max(dat_use$gene, na.rm = TRUE))
@@ -567,15 +585,30 @@ fit_marginal <- function(data,
         fit <- gamlss.fit
       }
     }
+
+    mean_vec <- stats::predict(fit, type = "response", what = "mu", data = dat_use)
+    theta_vec <-
+      stats::predict(fit, type = "response", what = "sigma", data = dat_use)
+    zero_vec <- rep( 0, length(mean_vec))
     
     if(simplify) {
       fit <- simplify_fit(fit)
     }
     
     if(trace){
-      return(list(fit = fit, warning = logs, time = time_list, removed_cell = remove_cell))
+      return(list(fit = fit, 
+                  warning = logs, 
+                  time = time_list, 
+                  removed_cell = remove_cell, 
+                  mean_vec = mean_vec, 
+                  theta_vec = theta_vec, 
+                  zero_vec = zero_vec ))
     }
-    return(list(fit = fit,removed_cell = remove_cell))
+    return(list(fit = fit,
+                removed_cell = remove_cell,
+                mean_vec = mean_vec, 
+                theta_vec = theta_vec, 
+                zero_vec = zero_vec ))
     #return(fit)
   }
   
