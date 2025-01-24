@@ -49,6 +49,7 @@
 #'
 #' @export fit_marginal
 #'
+library(MASS)
 fit_marginal <- function(data,
                          predictor = "gene", ## Fix this later.
                          mu_formula,
@@ -403,6 +404,7 @@ fit_marginal <- function(data,
         gamlss.fit <- NULL
       }
     } else if (family_gene == "nb"){
+      print( gene )
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
@@ -417,7 +419,7 @@ fit_marginal <- function(data,
         }), warning=function(w) {
           add_log("gam","warning", toString(w))
         })
-      
+      print("done mgcv fit") 
       if (sigma_formula != "~1") {
         #cat( "gamlss gene ", gene,  "fit formula ", mu_formula, " ", sigma_formula, "\n" )
         gamlss.fit <- withCallingHandlers(
@@ -443,6 +445,58 @@ fit_marginal <- function(data,
       } else {
         gamlss.fit <- NULL
       }
+
+      if( mu_formula == 'celltype' || mu_formula == 'celltype + batch') {
+
+        fit_each_split = function( dat_split ) {
+          gam.nb.fit = NULL
+          gam.nb.fit <- withCallingHandlers(
+            tryCatch({
+              model_nb <-glm.nb(gene ~ 1, data = dat_split)
+              time <- as.numeric(end.time - start.time)
+              model_nb 
+            }, error=function(e) {
+              add_log("gam.nb","error", toString(e))
+              NULL
+            }), warning=function(w) {
+              add_log("gam.nb","warning", toString(w))
+            })
+
+            if( is.null(gam.nb.fit) ) {
+              mu = dat_split$gene
+              names(mu) = rownames(dat_split)
+              sigma = mu
+              sigma[] = 0
+            } else {
+              mu = fitted( model_nb )
+              sigma = 1.0 / summary( model_nb )$theta
+              sigma = rep(sigma, length(mu) )
+            }
+            return( list( 'mu' = mu, 'sigma' = sigma ) )
+        }
+        if( mu_formula == 'celltype' ) {
+          res = lapply( split( dat_use, dat_use$cell_type), fit_each_split )
+        } else if( mu_formula == 'celltype + batch' ) {
+          res = lapply( split( dat_use, list( dat_use$cell_type), dat_use$batch ), fit_each_split )
+        } else {
+          print("unknown formula for mu")
+          exit(1)
+        }
+        mean_vec = c()
+        sigma_vec = c()
+        for(s in res) {
+          mean_vec = c(mean_vec, s[['mu']] )
+          sigma_vec = c(sigma_vec, s[['mu']] )
+        }
+        mean_vec = mean_vec[match(rownames(dat_use), names(mean_vec)) ]
+        sigma_vec = sigma_vec[match(rownames(dat_use), names(sigma_vec)) ]
+        #mean_vec <- stats::predict(mgcv.fit, type = "response", what = "mu", data = dat_use)
+        if( !identical( names(mean_vec), rownames(dat_use) )) {
+          print("Cannot match these two")
+          exit(1)
+        }
+      }
+
     } else if (family_gene == "zip") {
       mgcv.fit <- withCallingHandlers(
         tryCatch({
@@ -535,8 +589,6 @@ fit_marginal <- function(data,
           }
         }
       }
-      
-      print("found one mgcv fit")
       fit <- mgcv.fit
     } else {
       
@@ -544,19 +596,13 @@ fit_marginal <- function(data,
       theta_vec <-
         stats::predict(gamlss.fit, type = "response", what = "sigma", data = dat_use)
 
-      if( gene == 'Pyy' ) {
+      print( gene )
+      if( gene == 'LYZ' ) {
         print("mean_vec")
         print(mean_vec[1:10])
         print("theta_vec")
         print(theta_vec[1:10])
 
-        library(MASS)
-        model_nb <-glm.nb(gene ~ pseudotime, data = dat_use)
-        mu = fitted( model_nb )
-        sigma = 1.0 / summary( model_nb )$theta
-        print("ready to debug")
-        print( mu[1:10])
-        print( sigma)
       }
       
       if_infinite <- (sum(is.infinite(mean_vec + theta_vec)) > 0)
@@ -629,26 +675,42 @@ fit_marginal <- function(data,
       if(class(BPPARAM)[1] != "SerialParam"){
         BPPARAM$workers <- n_cores
       }
-      model_fit <- suppressMessages(paraFunc(fit_model_func, gene = feature_names,
-                                             family_gene = family_use,
-                                             MoreArgs = list(dat_use = dat_cov,
+      #model_fit <- suppressMessages(paraFunc(fit_model_func, gene = feature_names,
+      #                                       family_gene = family_use,
+      #                                       MoreArgs = list(dat_use = dat_cov,
+      #                                                       #mgcv_formula = mgcv_formula,
+      #                                                       mu_formula = mu_formula,
+      #                                                       sigma_formula = sigma_formula,
+      #                                                       predictor = predictor,
+      #                                                       count_mat = count_mat),
+      #                                       SIMPLIFY = FALSE, BPPARAM = BPPARAM))
+      model_fit <- fit_model_func( gene = feature_names[1],
+                                             family_gene = family_use[1],
+                                             dat_use = dat_cov,
                                                              #mgcv_formula = mgcv_formula,
                                                              mu_formula = mu_formula,
                                                              sigma_formula = sigma_formula,
                                                              predictor = predictor,
-                                                             count_mat = count_mat),
-                                             SIMPLIFY = FALSE, BPPARAM = BPPARAM))
+                                                             count_mat = count_mat)
     }else{
-      model_fit <-  suppressMessages(paraFunc(fit_model_func, gene = feature_names,
-                                              family_gene = family_use,
-                                              mc.cores = n_cores,
-                                              MoreArgs = list(dat_use = dat_cov,
-                                                              #mgcv_formula = mgcv_formula,
-                                                              mu_formula = mu_formula,
-                                                              sigma_formula = sigma_formula,
-                                                              predictor = predictor,
-                                                              count_mat = count_mat),
-                                              SIMPLIFY = FALSE))
+      #model_fit <-  suppressMessages(paraFunc(fit_model_func, gene = feature_names,
+      #                                        family_gene = family_use,
+      #                                        mc.cores = n_cores,
+      #                                        MoreArgs = list(dat_use = dat_cov,
+      #                                                        #mgcv_formula = mgcv_formula,
+      #                                                        mu_formula = mu_formula,
+      #                                                        sigma_formula = sigma_formula,
+      #                                                        predictor = predictor,
+      #                                                        count_mat = count_mat),
+      #                                        SIMPLIFY = FALSE))
+      model_fit <- fit_model_func( gene = feature_names[1],
+                                             family_gene = family_use[1],
+                                             dat_use = dat_cov,
+                                                             #mgcv_formula = mgcv_formula,
+                                                             mu_formula = mu_formula,
+                                                             sigma_formula = sigma_formula,
+                                                             predictor = predictor,
+                                                             count_mat = count_mat)
     }
   }else{ 
     # If using edf flexible fitting
@@ -713,7 +775,17 @@ fit_marginal <- function(data,
       if(class(BPPARAM)[1] != "SerialParam"){
         BPPARAM$workers <- n_cores
       }
-      model_fit_edf_flexible <- suppressMessages(paraFunc(fit_model_func, gene = edf_flexible_feature_names,
+      #model_fit_edf_flexible <- suppressMessages(paraFunc(fit_model_func, gene = edf_flexible_feature_names,
+      #                                                    family_gene = edf_flexible_family_use,
+      #                                                    MoreArgs = list(dat_use = dat_cov,
+      #                                                                    #mgcv_formula = mgcv_formula,
+      #                                                                    mu_formula = mu_formula,
+      #                                                                    sigma_formula = sigma_formula,
+      #                                                                    predictor = predictor,
+      #                                                                    count_mat = edf_flexible_count_mat,
+      #                                                                    edf=edf_flexible_predicted_upr),
+      #                                                    SIMPLIFY = FALSE, BPPARAM = BPPARAM))
+      model_fit_edf_flexible <- paraFunc(fit_model_func, gene = edf_flexible_feature_names,
                                                           family_gene = edf_flexible_family_use,
                                                           MoreArgs = list(dat_use = dat_cov,
                                                                           #mgcv_formula = mgcv_formula,
@@ -722,9 +794,20 @@ fit_marginal <- function(data,
                                                                           predictor = predictor,
                                                                           count_mat = edf_flexible_count_mat,
                                                                           edf=edf_flexible_predicted_upr),
-                                                          SIMPLIFY = FALSE, BPPARAM = BPPARAM))
+                                                          SIMPLIFY = FALSE, BPPARAM = BPPARAM)
     }else{
-      model_fit_edf_flexible <-  suppressMessages(paraFunc(fit_model_func, gene = edf_flexible_feature_names,
+      #model_fit_edf_flexible <-  suppressMessages(paraFunc(fit_model_func, gene = edf_flexible_feature_names,
+      #                                                     family_gene = edf_flexible_family_use,
+      #                                                     mc.cores = n_cores,
+      #                                                     MoreArgs = list(dat_use = dat_cov,
+      #                                                                     #mgcv_formula = mgcv_formula,
+      #                                                                     mu_formula = mu_formula,
+      #                                                                     sigma_formula = sigma_formula,
+      #                                                                     predictor = predictor,
+      #                                                                     count_mat = edf_flexible_count_mat,
+      #                                                                     edf=edf_flexible_predicted_upr),
+      #                                                     SIMPLIFY = FALSE))
+      model_fit_edf_flexible <-  paraFunc(fit_model_func, gene = edf_flexible_feature_names,
                                                            family_gene = edf_flexible_family_use,
                                                            mc.cores = n_cores,
                                                            MoreArgs = list(dat_use = dat_cov,
@@ -734,7 +817,7 @@ fit_marginal <- function(data,
                                                                            predictor = predictor,
                                                                            count_mat = edf_flexible_count_mat,
                                                                            edf=edf_flexible_predicted_upr),
-                                                           SIMPLIFY = FALSE))
+                                                           SIMPLIFY = FALSE)
     }
     
     
