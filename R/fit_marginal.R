@@ -49,6 +49,12 @@
 #'
 #' @export fit_marginal
 #'
+
+
+library(MASS)
+
+myDEBUG = FALSE
+
 fit_marginal <- function(data,
                          predictor = "gene", ## Fix this later.
                          mu_formula,
@@ -279,54 +285,89 @@ fit_marginal <- function(data,
     
     
     time_list <- c(NA,NA)
+
+    #set all the fitter parameters and check family gene is a valid one
+    all_gene_family = c( "binomial", "poisson", "gaussian", "nb", "zip", "zinb" )
+    if( ! family_gene %in% all_gene_family ) {
+      stop("The regression distribution must be one of gaussian, poisson, nb, zip or zinb!")
+    }
+    mgcv_family = list( 
+      "binomial" = "binomial",
+      "poisson" =  "poisson", 
+      "gaussian" = "gaussian", 
+      "nb" = "nb", 
+      "zip" = "poisson", 
+      "zinb" = "nb" 
+    )
+    gamlss_family = list( 
+      "binomial" = gamlss.dist::BI, 
+      "poisson" = gamlss.dist::PO, 
+      "gaussian" = gamlss.dist::NO, 
+      "nb" = gamlss.dist::NBI,
+      "zip" = gamlss.dist::ZIP, 
+      "zinb" = gamlss.dist::ZINBI
+    )
     
-    if (family_gene == "binomial") {
-      mgcv.fit <- withCallingHandlers(
-        tryCatch({
-          start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "binomial", discrete = usebam)
-          end.time <- Sys.time()
-          time <- as.numeric(end.time - start.time)
-          time_list[1] <- time
-          res
-        }, error=function(e) {
-          add_log("gam","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gam","warning", toString(w))
-          
-        })
-      
-      if (sigma_formula != "~1") {
-        gamlss.fit <- withCallingHandlers(
+    print( gene )
+    if( mu_formula == 'gene ~ cell_type' || mu_formula == 'gene ~ cell_type + batch') {
+      #print("going case 1")
+      #define the fit function for each split of the data. 
+      #return: list( mu, sigma )
+      fit_each_split = function( dat_split ) {
+        glm.nb.fit = NULL
+        glm.nb.fit <- withCallingHandlers(
           tryCatch({
-            start.time = Sys.time()
-            res <- gamlss::gamlss(
-              formula = mu_formula,
-              #sigma.formula = sigma_formula, ## Binomial is one para dist.
-              data = dat_use,
-              family = gamlss.dist::BI,
-              control = gamlss::gamlss.control(trace = FALSE, c.crit = 0.1)
-            )
-            end.time = Sys.time()
-            time = as.numeric(end.time - start.time)
-            time_list[2] <- time
-            res
+            model_nb <-glm.nb(gene ~ 1, data = dat_split)
+            time <- as.numeric(end.time - start.time)
+            print("glm.nb fit")
+            model_nb 
           }, error=function(e) {
-            add_log("gamlss","error", toString(e))
+            add_log("glm.nb","error", toString(e))
             NULL
           }), warning=function(w) {
-            add_log("gamlss","warning", toString(w))
+            add_log("glm.nb","warning", toString(w))
           })
-        
-      } else {
-        gamlss.fit <- NULL
+
+          if( is.null(glm.nb.fit) ) {
+            mu = dat_split$gene
+            names(mu) = rownames(dat_split)
+            sigma = mu
+            sigma[] = 0
+          } else {
+            mu = fitted( model_nb )
+            sigma = 1.0 / summary( model_nb )$theta
+            sigma = rep(sigma, length(mu) )
+          }
+          return( list( 'mu' = mu, 'sigma' = sigma ) )
       }
-    } else if (family_gene == "poisson") {
+
+      if( mu_formula == 'gene ~ cell_type' ) {
+        res = lapply( split( dat_use, dat_use$cell_type), fit_each_split )
+      } else if( mu_formula == 'gene ~ cell_type + batch' ) {
+        res = lapply( split( dat_use, list( dat_use$cell_type, dat_use$batch ) ), fit_each_split )
+      } else {
+        print("unknown formula for mu")
+        exit(1)
+      }
+      mean_vec = c(); theta_vec = c()
+      for(s in res) {
+        mean_vec = c(mean_vec, s[['mu']] ); 
+        theta_vec = c(theta_vec, s[['sigma']] )
+      }
+      mean_vec = mean_vec[match(rownames(dat_use), names(mean_vec)) ]
+      theta_vec = theta_vec[match(rownames(dat_use), names(theta_vec)) ]
+      zero_vec <- rep( 0, length(mean_vec))
+      stopifnot( identical( names(mean_vec), rownames(dat_use) ));
+      #end if mu_formula is cell_type + batch
+
+    } else {
+
+      # formula is not "gene ~ cell_type + batch", now we fit gam and gamlss 
+      #print("going case 2")
       mgcv.fit <- withCallingHandlers(
         tryCatch({
           start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "poisson", discrete = usebam)
+          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = mgcv_family[[family_gene]], discrete = usebam)
           end.time <- Sys.time()
           time <- as.numeric(end.time - start.time)
           time_list[1] <- time
@@ -337,89 +378,12 @@ fit_marginal <- function(data,
         }), warning=function(w) {
           add_log("gam","warning", toString(w))
         })
-      
-      if (sigma_formula != "~1") {
-        gamlss.fit <- withCallingHandlers(
-          tryCatch({
-            start.time = Sys.time()
-            res <- gamlss::gamlss(
-              formula = mu_formula,
-              #sigma.formula = sigma_formula, ## Poisson has constant mean
-              data = dat_use,
-              family = gamlss.dist::PO,
-              control = gamlss::gamlss.control(trace = FALSE, c.crit = 0.1))
-            end.time = Sys.time()
-            time = as.numeric(end.time - start.time)
-            time_list[2] <- time
-            res
-          }, error=function(e) {
-            add_log("gamlss","error", toString(e))
-            NULL
-          }), warning=function(w) {
-            add_log("gamlss","warning", toString(w))
-          })
-      } else {
-        gamlss.fit <- NULL
-      }
-    } else if (family_gene == "gaussian") {
-      mgcv.fit <- withCallingHandlers(
-        tryCatch({
-          start.time <- Sys.time()
-          res <- fitfunc(formula = mgcv_formula, data = dat_use, family = "gaussian", discrete = usebam)
-          end.time <- Sys.time()
-          time <- as.numeric(end.time - start.time)
-          time_list[1] <- time
-          res
-        }, error=function(e) {
-          add_log("gam","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gam","warning", toString(w))
-        })
-      
-      if (sigma_formula != "~1") {
-        gamlss.fit<- withCallingHandlers(
-          tryCatch({
-            start.time = Sys.time()
-            res <- gamlss::gamlss(
-              formula = mu_formula,
-              sigma.formula = sigma_formula,
-              data = dat_use,
-              family = gamlss.dist::NO,
-              control = gamlss::gamlss.control(trace = FALSE, c.crit = 0.1)
-            )
-            end.time = Sys.time()
-            time = as.numeric(end.time - start.time)
-            time_list[2] <- time
-            res
-          }, error=function(e) {
-            add_log("gamlss","error", toString(e))
-            NULL
-          }), warning=function(w) {
-            add_log("gamlss","warning", toString(w))
-          })
-        
-      } else {
-        gamlss.fit <- NULL
-      }
-    } else if (family_gene == "nb"){
-      mgcv.fit <- withCallingHandlers(
-        tryCatch({
-          start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "nb", discrete = usebam)
-          end.time <- Sys.time()
-          time <- as.numeric(end.time - start.time)
-          time_list[1] <- time
-          res
-        }, error=function(e) {
-          add_log("gam","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gam","warning", toString(w))
-        })
-      
-      if (sigma_formula != "~1") {
-        #cat( "gamlss gene ", gene,  "fit formula ", mu_formula, " ", sigma_formula, "\n" )
+
+      #print( mu_formula )
+      #print( sigma_formula )
+      #print( colnames(dat_use))
+      #print( dim(dat_use))
+      if( family_gene == "zip" || family_gene == "zinb" || sigma_formula != "~1") {
         gamlss.fit <- withCallingHandlers(
           tryCatch({
             start.time = Sys.time()
@@ -427,7 +391,8 @@ fit_marginal <- function(data,
               formula = mu_formula,
               sigma.formula = sigma_formula,
               data = dat_use,
-              family = gamlss.dist::NBI,
+              family = gamlss_family[[family_gene]],
+              #family = gamlss.dist::NBI,
               control = gamlss::gamlss.control(trace = FALSE,  c.crit = 0.1)
             )
             end.time = Sys.time()
@@ -443,173 +408,73 @@ fit_marginal <- function(data,
       } else {
         gamlss.fit <- NULL
       }
-    } else if (family_gene == "zip") {
-      mgcv.fit <- withCallingHandlers(
-        tryCatch({
-          start.time <- Sys.time()
-          res <-fitfunc(formula = mgcv_formula, data = dat_use, family = "poisson", discrete = usebam)
-          end.time <- Sys.time()
-          time <- as.numeric(end.time - start.time)
-          time_list[1] <- time
-          res
-        }, error=function(e) {
-          add_log("gam","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gam","warning", toString(w))
-        })
-      gamlss.fit <- withCallingHandlers(
-        tryCatch({
-          start.time = Sys.time()
-          res <- gamlss::gamlss(
-            formula = mu_formula,
-            sigma.formula = mu_formula, ## Here sigma is the dropout prob, not variance!
-            data = dat_use,
-            family = gamlss.dist::ZIP,
-            control = gamlss::gamlss.control(trace = FALSE, c.crit = 0.1)
-            
-          )
-          end.time = Sys.time()
-          time = as.numeric(end.time - start.time)
-          time_list[2] <- time
-          res
-        }, error=function(e) {
-          add_log("gamlss","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gamlss","warning", toString(w))
-        })
-      
-    } else if (family_gene == "zinb"){
-      mgcv.fit <- withCallingHandlers(
-        tryCatch({
-          start.time <- Sys.time()
-          res <- fitfunc(formula = mgcv_formula, data = dat_use, family = "nb", discrete = usebam)
-          end.time <- Sys.time()
-          time <- as.numeric(end.time - start.time)
-          time_list[1] <- time
-          res
-        }, error=function(e) {
-          add_log("gam","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gam","warning", toString(w))
-        })
-      gamlss.fit <- withCallingHandlers(
-        tryCatch({
-          start.time = Sys.time()
-          res <- gamlss::gamlss(
-            formula = mu_formula,
-            sigma.formula = sigma_formula,
-            nu.formula = mu_formula, ## Here nu is the dropout probability!
-            data = dat_use,
-            family = gamlss.dist::ZINBI,
-            control = gamlss::gamlss.control(trace = FALSE, c.crit = 0.1)
-          )
-          end.time = Sys.time()
-          time = as.numeric(end.time - start.time)
-          time_list[2] <- time
-          res
-        }, error=function(e) {
-          add_log("gamlss","error", toString(e))
-          NULL
-        }), warning=function(w) {
-          add_log("gamlss","warning", toString(w))
-        })
-      
-    } else {
-      stop("The regression distribution must be one of gaussian, poisson, nb, zip or zinb!")
-    }
-    
-    ## Check if gamlss is fitted.
-    if (!"gamlss" %in% class(gamlss.fit)) {
-      if (sigma_formula != "~1") {
-        message(paste0(gene, " uses mgcv::gam due to gamlss's error!"))
-        ## gamlss.fit contains warning message
-        if(!is.null(gamlss.fit)){
-          ## check whether gam has warning messages
-          if(is.null(warn)){
-            warn = gamlss.fit
-          }else{
-            warn = c(warn, gamlss.fit)
+
+      ## Check if gamlss is fitted.
+      if (!"gamlss" %in% class(gamlss.fit)) {
+        if (sigma_formula != "~1") {
+          message(paste0(gene, " uses mgcv::gam due to gamlss's error!"))
+          ## gamlss.fit contains warning message
+          if(!is.null(gamlss.fit)){
+            ## check whether gam has warning messages
+            if(is.null(warn)){
+              warn = gamlss.fit
+            }else{
+              warn = c(warn, gamlss.fit)
+            }
           }
         }
-      }
-      
-      print("found one mgcv fit")
-      fit <- mgcv.fit
-    } else {
-      
-      mean_vec <- stats::predict(gamlss.fit, type = "response", what = "mu", data = dat_use)
-      theta_vec <-
-        stats::predict(gamlss.fit, type = "response", what = "sigma", data = dat_use)
+        fit <- mgcv.fit
+      } else {
+        #mean_vec <- stats::predict(gamlss.fit, type = "response", what = "mu", data = dat_use)
+        #theta_vec <- stats::predict(gamlss.fit, type = "response", what = "sigma", data = dat_use)
+        mean_vec <- fitted(gamlss.fit, type = "response", what = "mu")
+        theta_vec <- fitted(gamlss.fit, type = "response", what = "sigma")
 
-      if( gene == 'Pyy' ) {
-        print("mean_vec")
-        print(mean_vec[1:10])
-        print("theta_vec")
-        print(theta_vec[1:10])
-
-        library(MASS)
-        model_nb <-glm.nb(gene ~ pseudotime, data = dat_use)
-        mu = fitted( model_nb )
-        sigma = 1.0 / summary( model_nb )$theta
-        print("ready to debug")
-        print( mu[1:10])
-        print( sigma)
-      }
-      
-      if_infinite <- (sum(is.infinite(mean_vec + theta_vec)) > 0)
-      if_overmax <- (max(mean_vec, na.rm = TRUE) > 10* max(dat_use$gene, na.rm = TRUE))
-      if(family_gene %in% c("nb","zinb")){
-        #if_overdisp <- (min(theta_vec, na.rm = TRUE) < 1/ 1000)
-        if_overdisp <- (max(theta_vec, na.rm = TRUE) > 1000)
+        if_infinite <- (sum(is.infinite(mean_vec + theta_vec)) > 0)
+        if_overmax <- (max(mean_vec, na.rm = TRUE) > 10* max(dat_use$gene, na.rm = TRUE))
+        if(family_gene %in% c("nb","zinb")){
+          #if_overdisp <- (min(theta_vec, na.rm = TRUE) < 1/ 1000)
+          if_overdisp <- (max(theta_vec, na.rm = TRUE) > 1000)
+          
+        }else{
+          if_overdisp <- FALSE
+        }
         
-      }else{
-        if_overdisp <- FALSE
+        if (if_infinite | if_overmax | if_overdisp) {
+          add_log("fit_marginal","warning", paste0(gene, " gamlss returns abnormal fitting values!"))
+          #message(paste0(gene, " gamlss returns abnormal fitting values!"))
+          fit <- mgcv.fit
+        } else if (stats::AIC(mgcv.fit) - stats::AIC(gamlss.fit) < -Inf) {
+          message(paste0(
+            gene,
+            "'s gamlss AIC is not signifincantly smaller than gam!"
+          ))
+          fit <- mgcv.fit
+        }
+        else {
+          fit <- gamlss.fit
+        }
       }
-      
-      
-      if (if_infinite | if_overmax | if_overdisp) {
-        add_log("fit_marginal","warning", paste0(gene, " gamlss returns abnormal fitting values!"))
-        #message(paste0(gene, " gamlss returns abnormal fitting values!"))
-        fit <- mgcv.fit
-      } else if (stats::AIC(mgcv.fit) - stats::AIC(gamlss.fit) < -Inf) {
-        message(paste0(
-          gene,
-          "'s gamlss AIC is not signifincantly smaller than gam!"
-        ))
-        fit <- mgcv.fit
-      }
-      else {
-        fit <- gamlss.fit
-      }
-    }
 
-    mean_vec <- stats::predict(fit, type = "response", what = "mu", data = dat_use)
-    theta_vec <-
-      stats::predict(fit, type = "response", what = "sigma", data = dat_use)
-    zero_vec <- rep( 0, length(mean_vec))
-    
-    if(simplify) {
-      fit <- simplify_fit(fit)
+      #mean_vec  <- stats::predict(fit, type = "response", what = "mu", data = dat_use)
+      #theta_vec <- stats::predict(fit, type = "response", what = "sigma", data = dat_use)
+      mean_vec <- fitted(fit, type = "response", what = "mu"); names(mean_vec) = rownames(dat_use)
+      theta_vec <- fitted(fit, type = "response", what = "sigma"); names(theta_vec) = rownames(dat_use)
+      zero_vec  <- rep( 0, length(mean_vec)); names(zero_vec) = rownames(dat_use)
     }
     
     if(trace){
-      return(list(fit = fit, 
-                  warning = logs, 
+      return(list(warning = logs, 
                   time = time_list, 
                   removed_cell = remove_cell, 
                   mean_vec = mean_vec, 
                   theta_vec = theta_vec, 
                   zero_vec = zero_vec ))
     }
-    return(list(fit = fit,
-                removed_cell = remove_cell,
+    return(list(removed_cell = remove_cell,
                 mean_vec = mean_vec, 
                 theta_vec = theta_vec, 
                 zero_vec = zero_vec ))
-    #return(fit)
   }
   
   paraFunc <- parallel::mcmapply
@@ -629,7 +494,17 @@ fit_marginal <- function(data,
       if(class(BPPARAM)[1] != "SerialParam"){
         BPPARAM$workers <- n_cores
       }
-      model_fit <- suppressMessages(paraFunc(fit_model_func, gene = feature_names,
+      if( myDEBUG ) {
+        model_fit <- fit_model_func( gene = feature_names[1],
+                                             family_gene = family_use[1],
+                                             dat_use = dat_cov,
+                                                             #mgcv_formula = mgcv_formula,
+                                                             mu_formula = mu_formula,
+                                                             sigma_formula = sigma_formula,
+                                                             predictor = predictor,
+                                                             count_mat = count_mat)
+      } else {
+        model_fit <- suppressMessages(paraFunc(fit_model_func, gene = feature_names,
                                              family_gene = family_use,
                                              MoreArgs = list(dat_use = dat_cov,
                                                              #mgcv_formula = mgcv_formula,
@@ -638,8 +513,19 @@ fit_marginal <- function(data,
                                                              predictor = predictor,
                                                              count_mat = count_mat),
                                              SIMPLIFY = FALSE, BPPARAM = BPPARAM))
+      }
     }else{
-      model_fit <-  suppressMessages(paraFunc(fit_model_func, gene = feature_names,
+      if( myDEBUG ) {
+        model_fit <- fit_model_func( gene = feature_names[1],
+                                             family_gene = family_use[1],
+                                             dat_use = dat_cov,
+                                                             #mgcv_formula = mgcv_formula,
+                                                             mu_formula = mu_formula,
+                                                             sigma_formula = sigma_formula,
+                                                             predictor = predictor,
+                                                             count_mat = count_mat)
+      } else {
+        model_fit <-  suppressMessages(paraFunc(fit_model_func, gene = feature_names,
                                               family_gene = family_use,
                                               mc.cores = n_cores,
                                               MoreArgs = list(dat_use = dat_cov,
@@ -649,6 +535,7 @@ fit_marginal <- function(data,
                                                               predictor = predictor,
                                                               count_mat = count_mat),
                                               SIMPLIFY = FALSE))
+      }
     }
   }else{ 
     # If using edf flexible fitting
@@ -795,7 +682,7 @@ simplify_fit <- function(cm) {
   cm
 }
 
-## Function from R package reldist by Dr. Mark S. Handcock      
+## Function from R package reldist by Dr. Mark S. Handcock
 gini <- function(x, weights=rep(1,length=length(x))){
   ox <- order(x)
   x <- x[ox]
@@ -806,3 +693,5 @@ gini <- function(x, weights=rep(1,length=length(x))){
   nu <- nu / nu[n]
   sum(nu[-1]*p[-n]) - sum(nu[-n]*p[-1])
 }
+
+
