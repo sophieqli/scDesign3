@@ -889,3 +889,5 @@ gini <- function(x, weights=rep(1,length=length(x))){
   nu <- nu / nu[n]
   sum(nu[-1]*p[-n]) - sum(nu[-n]*p[-1])
 }
+
+
